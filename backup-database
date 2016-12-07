@@ -1,0 +1,192 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+LOG_APP="backup-database"
+VERSION="1.0.1"
+
+# MySQL login settings
+# It's preferable to keep login details in ~/.my.cnf, but it can be added
+# here as well, e.g.: opts_std="-u root --password="" -h localhost --databases"
+opts_std="-h localhost --databases"
+
+tmp_dir="/tmp"
+sql_file="${$}.sql"
+
+DATE=$(date +%Y%m%d)
+START=$(date +%s.%N)
+
+log=false
+silent=false
+
+
+display_help()
+{
+    echo "Usage: $(basename ${BASH_SOURCE[0]}) [options] <database>"
+    echo ""
+    echo "    -o FILE   Output to FILE, default is '<database>-YYYYMMDD.sql.gz'"
+    echo "    -l        Log to syslog"
+    echo "    -s        Be silent"
+    echo "    -t DIR    Use DIR instead of '/tmp/' for temporary files"
+    echo "    -h        Show this help message and exit"
+    echo "    -v        Show version and exit"
+}
+
+
+display_version()
+{
+    echo "$(basename ${BASH_SOURCE[0]}) v${VERSION}"
+}
+
+
+function print_action ()
+{
+    if [ ${silent} = false ]
+    then
+        max_width=30
+        line=$(printf ' %.s' $(eval "echo {1.."$((${max_width}))"}"))
+        printf "%s %s" $1 "${line:${#1}}"
+    fi
+}
+
+
+function print_state ()
+{
+    if [ ${silent} = false ]
+    then
+        echo "[ ${1} ]"
+    fi
+}
+
+
+function report ()
+{
+    if [ ${silent} = false ]
+    then
+        echo ${1}
+    fi
+    if [ ${log} = true ]
+    then
+        logger -t "${LOG_APP}" -p 6 ${1}
+    fi
+}
+
+
+function report_err ()
+{
+    if [ ${silent} = false ]
+    then
+        echo ${1} >&2
+    fi
+    if [ ${log} = true ]
+    then
+        logger -t "${LOG_APP}" -p 3 ${1}
+    fi
+}
+
+
+function cleanup ()
+{
+    set +o errexit
+    rm "${tmp_dir}/${sql_file}" 2>/dev/null
+    report "Finished execution after $(echo "$(date +%s.%N) - ${START}" | bc) seconds"
+}
+
+
+function f ()
+{
+    code=$?
+    cmd=${BASH_COMMAND}
+    lineno=${BASH_LINENO[0]}
+
+    print_state "Failed"
+    report_err "Error during command '$(echo "${cmd}"|awk '{print $1}')' (line ${lineno})"
+    cleanup
+    exit ${code}
+}
+
+
+trap f ERR
+
+
+# getopt index variable
+OPTIND=1
+while getopts ":o:lst:vh" opt; do
+    case ${opt} in
+        o)
+            out="${OPTARG}"
+            ;;
+        l)
+            log=true
+            ;;
+        s)
+            silent=true
+            ;;
+        t)
+            tmp_dir="${OPTARG}"
+            ;;
+        h)
+            display_help
+            exit 0
+            ;;
+        v)
+            display_version
+            exit 0
+            ;;
+        \?)
+            report "Invalid option: -${OPTARG}"
+            display_help
+            exit 1
+            ;;
+        :)
+            report "Option -${OPTARG} requires an argument"
+            display_help
+            exit 1
+            ;;
+    esac
+done
+
+# Remove all option arguments
+shift $(($OPTIND - 1))
+
+if [ ${#} = 0 ]
+then
+    report "No database specified"
+    display_help
+    exit 1
+elif [ ${#} -gt 1 ]
+then
+    report "Too many arguments"
+    display_help
+    exit 1
+fi
+
+
+database=${1}
+out=$([ -z ${out+x} ] && echo "${database}-${DATE}.sql.gz" || echo "${out}")
+
+opts_struct="--no-data --routines --skip-triggers --events"
+opts_data="--no-create-db --no-create-info --skip-triggers --lock-tables"
+opts_triggers="--no-data --no-create-db --no-create-info --triggers"
+
+print_action "Extracting structure.."
+mysqldump ${opts_std} ${database} ${opts_struct} > "${tmp_dir}/${sql_file}" 2>/dev/null
+print_state "OK"
+
+print_action "Extracting data.."
+mysqldump ${opts_std} ${database} ${opts_data} >> "${tmp_dir}/${sql_file}" 2>/dev/null
+print_state "OK"
+
+print_action "Extracting triggers.."
+mysqldump ${opts_std} ${database} ${opts_triggers} >> "${tmp_dir}/${sql_file}" 2>/dev/null
+print_state "OK"
+
+print_action "Compressing.."
+gzip -9c "${tmp_dir}/${sql_file}" > "${out}"
+print_state "OK"
+
+cleanup
+
+exit 0
