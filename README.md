@@ -15,7 +15,7 @@ This script essentially does the following:
 
 To be able to access the database the user executing the script must either have
 login credentials in `~/.my.cnf` or place the credentials into the script. The
-former alternative is prefable and should always be used if anyone else has
+former alternative is preferable and should always be used if anyone else has
 access to the script.
 
 ```
